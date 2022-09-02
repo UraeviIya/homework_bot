@@ -129,6 +129,7 @@ dmypy.json
 .pyre/
 
 # Папки, создаваемые средой разработки
+main.log
 .idea
 .DS_Store
 .AppleDouble
@@ -149,4 +150,5 @@ dmypy.json
 static/
 posts/static/
 media/
+
 

@@ -3,6 +3,7 @@ import os
 import time
 from http import HTTPStatus
 
+import sys
 import requests
 import telegram
 from dotenv import load_dotenv
@@ -37,11 +38,11 @@ logger.addHandler(logging.StreamHandler())
 
 def send_message(bot, message):
     """Отправка сообщения в Telegram."""
+    logger.info(f'Сообщение отправлено {message}')
     try:
-        bot.send_message(TELEGRAM_CHAT_ID, message)
-        logger.info(f'Сообщение в отправлено: {message}')
-    except telegram.TelegramError as error:
-        logger.error(f'Сообщение не отправлено :{error}')
+        bot.send_message(TELEGRAM_CHAT_ID, text=message)
+    except telegram.error as error:
+        raise error('Сбой отправки сообщения')
 
 
 def get_api_answer(current_timestamp):
@@ -49,36 +50,32 @@ def get_api_answer(current_timestamp):
     timestamp = current_timestamp or int(time.time())
     params = {'from_date': timestamp}
     try:
+        logger.info(f'Отправлен запрос к API: {params}')
         homework_statuses = requests.get(ENDPOINT,
                                          headers=HEADERS,
                                          params=params
                                          )
     except Exception as error:
-        logging.error(f'Ошибка при запросе к основному API: {error}')
         raise Exception(f'Ошибка при запросе к основному API: {error}')
     if homework_statuses.status_code != HTTPStatus.OK:
         status_code = homework_statuses.status_code
-        logging.error(f'Ошибка {status_code}')
         raise Exception(f'Ошибка {status_code}')
     try:
         return homework_statuses.json()
     except ValueError:
-        logger.error('Ошибка парсинга ответа из формата json')
         raise ValueError('Ошибка парсинга ответа из формата json')
 
 
 def check_response(response):
     """Проверка ответа API на корректность."""
-    if type(response) is not dict:
+    if not isinstance(response, dict):
         raise TypeError('Ответ API не является словарем')
-    if 'homeworks' not in response:
-        raise KeyError('Отсутствует ключ homeworks')
-    homeworks = response['homeworks']
-    if type(homeworks) is not list:
+    homeworks = response.get('homeworks')
+    if 'homeworks' and 'current_date' not in response.keys():
+        raise KeyError('Отсутствуют ключи')
+    if not isinstance(homeworks, list):
         raise TypeError('Ответ API не является словарём')
-    if homeworks == []:
-        return homeworks
-    return response.get('homeworks')
+    return homeworks
 
 
 def parse_status(homework):
@@ -88,15 +85,12 @@ def parse_status(homework):
     """
     homework_name = homework.get('homework_name')
     homework_status = homework.get('status')
-    verdict = HOMEWORK_STATUSES[homework_status]
-    if homework_status is None:
-        error_message = f'Ошибка. Значение статуса пустое: {homework_status}'
-        logger.error(error_message)
-        raise IndexError(error_message)
-    if homework_name is None:
-        error_message = f'Ошибка. Значение имени работы пусто: {homework_name}'
-        logger.error(error_message)
-        raise ValueError(error_message)
+    if 'status' not in homework:
+        raise Exception(f'Ошибка. Значение статуса пустое: {homework_status}')
+    if 'homework_name' not in homework:
+        raise KeyError(f'Ошибка. Значение имени работы пусто: {homework_name}')
+    if homework_status not in HOMEWORK_STATUSES:
+        raise Exception(f'Недокументированный статус : {homework_status}')
     verdict = HOMEWORK_STATUSES[homework_status]
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
@@ -106,37 +100,31 @@ def check_tokens():
     Которые необходимы для работы программы.
     При отсутствии переменной вернем False, иначе-True
     """
-    variables = (PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
-    for variable in variables:
-        if not variable:
-            logger.critical(
-                f'Отсутствует обязательная {variable}.'
-                'Бот завершает работу'
-            )
-            return False
-    return True
+    return all((PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID))
 
 
 def main():
     """Основная логика работы бота."""
-    check_tokens()
+    if not check_tokens():
+        logger.critical('Отсутсвует один или несколько токенов')
+        sys.exit('Отсутсвует один или несколько токенов')
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
     while True:
         try:
             response = get_api_answer(current_timestamp)
             homework = check_response(response)
-            if len(response) > 0:
-                homework = parse_status(response[0])
+            if homework:
+                message = parse_status(homework[0])
                 if homework is not None:
                     send_message(bot, homework)
             else:
                 logger.debug('Нет новых статусов')
             current_timestamp = response['current_date']
-            time.sleep(RETRY_TIME)
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
             send_message(bot, message)
+        finally:
             time.sleep(RETRY_TIME)
 
 
